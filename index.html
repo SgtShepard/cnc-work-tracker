@@ -488,4 +488,259 @@
                 
                 if (activity === 'custom') {
                     activity = elements.customActivity.value.trim();
-                    if (!activit
+                    if (!activity) return showToast('Please enter custom activity');
+                }
+                
+                if (!jobOrder || !drawingNumber) {
+                    return showToast('Job and Drawing numbers are required');
+                }
+
+                currentCycle.sessions.push({
+                    jobOrder,
+                    drawingNumber,
+                    workActivity: activity,
+                    date: getCurrentDateStr(),
+                    startTime: getCurrentTimeStr(),
+                    endTime: null
+                });
+                
+                showToast('Job started');
+            }
+
+            saveCycle();
+            renderUI();
+        }
+
+        function handleEndCycle() {
+            if (elements.endCycleBtn.disabled) return;
+            
+            // Upsert into archive
+            archive[currentCycle.id] = {
+                id: currentCycle.id,
+                date: getCurrentDateStr(),
+                sessions: JSON.parse(JSON.stringify(currentCycle.sessions))
+            };
+            saveArchive();
+            
+            // Show output
+            showOutputModal(currentCycle.sessions);
+        }
+
+        function executeClearCycle() {
+            currentCycle = { id: generateId(), sessions: [] };
+            saveCycle();
+            
+            // Reset form (except the worker name)
+            elements.jobOrder.value = '';
+            elements.drawingNumber.value = '';
+            elements.workActivity.value = 'CNC programming';
+            elements.customActivity.value = '';
+            handleActivityChange();
+            
+            closeSheet(elements.confirmSheet);
+            renderUI();
+            showToast('Cycle cleared');
+        }
+
+        // --- Output Generation ---
+        function generateOutputText(sessions) {
+            const completed = sessions.filter(s => s.endTime !== null);
+            if (completed.length === 0) return '';
+
+            const blocks = completed.map(s => 
+`Start: ${s.startTime} - ${s.endTime}
+Job order: ${s.jobOrder}
+Drawing no.: ${s.drawingNumber}
+Date: ${s.date}
+Work activity: ${s.workActivity}`);
+
+            const currentName = elements.workerName.value.trim() || 'Anonymous';
+            return currentName + "\n" + blocks.join("\n\n");
+        }
+
+        function showOutputModal(sessions) {
+            const text = generateOutputText(sessions);
+            elements.outputDisplay.textContent = text;
+            openSheet(elements.outputSheet);
+        }
+
+        function copyOutput() {
+            const text = elements.outputDisplay.textContent;
+            navigator.clipboard.writeText(text).then(() => {
+                showToast('Copied to clipboard');
+                closeSheet(elements.outputSheet);
+            }).catch(() => {
+                showToast('Failed to copy');
+            });
+        }
+
+        // --- UI Rendering ---
+        function renderUI() {
+            renderActiveCard();
+            renderSessions();
+            updateButtonStates();
+        }
+
+        function renderActiveCard() {
+            const active = getActiveSession();
+            if (active) {
+                elements.activeCard.classList.remove('hidden');
+                elements.activeJobDetails.innerHTML = `Order: ${active.jobOrder}<br>Dwg: ${active.drawingNumber}`;
+                elements.activeStartTime.textContent = active.startTime;
+            } else {
+                elements.activeCard.classList.add('hidden');
+            }
+        }
+
+        function renderSessions() {
+            elements.sessionsList.innerHTML = '';
+            
+            // Group by date
+            const grouped = {};
+            currentCycle.sessions.forEach(s => {
+                if (!grouped[s.date]) grouped[s.date] = [];
+                grouped[s.date].push(s);
+            });
+
+            for (const [date, sessions] of Object.entries(grouped)) {
+                const header = document.createElement('div');
+                header.className = 'date-header';
+                header.textContent = date;
+                elements.sessionsList.appendChild(header);
+
+                // Reverse so newest is top under date
+                [...sessions].reverse().forEach(s => {
+                    const item = document.createElement('div');
+                    item.className = 'session-item';
+                    
+                    const isActive = s.endTime === null;
+                    const timeStr = `${s.startTime} - ${isActive ? 'Active' : s.endTime}`;
+                    
+                    item.innerHTML = `
+                        <div>
+                            <div class="mono" style="font-weight:bold">${s.jobOrder}</div>
+                            <div class="mono" style="font-size:0.85em; color:var(--text-muted)">${s.drawingNumber}</div>
+                            <div style="font-size:0.85em; margin-top:4px">${s.workActivity}</div>
+                        </div>
+                        <div class="session-times mono ${isActive ? 'pulsing-text' : ''}" style="${isActive ? 'color:var(--accent)' : ''}">${timeStr}</div>
+                    `;
+                    elements.sessionsList.appendChild(item);
+                });
+            }
+        }
+
+        function updateButtonStates() {
+            const hasActive = getActiveSession() !== undefined;
+            const completedCount = currentCycle.sessions.filter(s => s.endTime !== null).length;
+            
+            // Disabled if active session exists OR no completed sessions exist
+            elements.endCycleBtn.disabled = hasActive || completedCount === 0;
+        }
+
+        // --- Archive Menu ---
+        function renderArchive() {
+            elements.archiveList.innerHTML = '';
+            const entries = Object.values(archive).sort((a, b) => b.id.localeCompare(a.id)); // roughly newest first
+            
+            if (entries.length === 0) {
+                elements.archiveList.innerHTML = '<p style="color:var(--text-muted); text-align:center;">No archived cycles</p>';
+                return;
+            }
+
+            entries.forEach(entry => {
+                const completedCount = entry.sessions.filter(s => s.endTime !== null).length;
+                
+                const el = document.createElement('div');
+                el.className = 'archive-item';
+                
+                const info = document.createElement('div');
+                info.className = 'archive-info';
+                info.innerHTML = `
+                    <strong>${entry.date}</strong>
+                    <span style="font-size:0.85rem; color:var(--text-muted)">${completedCount} sessions</span>
+                `;
+                info.onclick = () => {
+                    closeArchive();
+                    showOutputModal(entry.sessions);
+                };
+
+                const delBtn = document.createElement('button');
+                delBtn.className = 'btn-delete';
+                delBtn.innerHTML = '✕';
+                delBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    delete archive[entry.id];
+                    saveArchive();
+                    renderArchive();
+                };
+
+                el.appendChild(info);
+                el.appendChild(delBtn);
+                elements.archiveList.appendChild(el);
+            });
+        }
+
+        function openArchive() {
+            renderArchive();
+            elements.overlay.classList.add('active');
+            elements.archiveMenu.classList.add('open');
+        }
+
+        function closeArchive() {
+            elements.archiveMenu.classList.remove('open');
+            elements.overlay.classList.remove('active');
+        }
+
+        // --- Modals ---
+        function openSheet(sheetEl) {
+            elements.overlay.classList.add('active');
+            sheetEl.classList.add('open');
+        }
+
+        function closeSheet(sheetEl) {
+            sheetEl.classList.remove('open');
+            elements.overlay.classList.remove('active');
+        }
+
+        function closeAllModals() {
+            closeArchive();
+            closeSheet(elements.outputSheet);
+            closeSheet(elements.confirmSheet);
+        }
+
+        // --- PWA Registration ---
+        function registerPWA() {
+            // Inline manifest
+            const manifest = {
+                name: "Work Tracker",
+                short_name: "Tracker",
+                display: "standalone",
+                background_color: "#121212",
+                theme_color: "#121212",
+                icons: [{ src: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%23121212'/%3E%3Ccircle cx='50' cy='50' r='30' fill='%2300c896'/%3E%3C/svg%3E", sizes: "192x192", type: "image/svg+xml" }]
+            };
+            const manifestBlob = new Blob([JSON.stringify(manifest)], {type: 'application/manifest+json'});
+            const manifestUrl = URL.createObjectURL(manifestBlob);
+            const link = document.createElement('link');
+            link.rel = 'manifest';
+            link.href = manifestUrl;
+            document.head.appendChild(link);
+
+            // Inline Service Worker for basic PWA criteria
+            if ('serviceWorker' in navigator) {
+                const swCode = `
+                    self.addEventListener('install', e => self.skipWaiting());
+                    self.addEventListener('activate', e => self.clients.claim());
+                    self.addEventListener('fetch', e => {});
+                `;
+                const swBlob = new Blob([swCode], {type: 'application/javascript'});
+                const swUrl = URL.createObjectURL(swBlob);
+                navigator.serviceWorker.register(swUrl).catch(err => console.log('SW registration failed:', err));
+            }
+        }
+
+        // Start App
+        init();
+    </script>
+</body>
+</html>
